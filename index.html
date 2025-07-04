@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bottle Rocket Telemetry</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* bg-gray-900 */
+        }
+        .status-dot {
+            height: 12px;
+            width: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            transition: background-color 0.5s ease;
+        }
+        .status-connected { background-color: #22c55e; /* green-500 */ }
+        .status-disconnected { background-color: #ef4444; /* red-500 */ }
+        .data-card {
+            background-color: #1f2937; /* bg-gray-800 */
+            border: 1px solid #374151; /* border-gray-700 */
+            border-radius: 0.75rem; /* rounded-xl */
+            padding: 1.5rem; /* p-6 */
+            transition: all 0.3s ease;
+        }
+        .data-card:hover {
+            border-color: #4f46e5; /* indigo-600 */
+        }
+        .data-label {
+            color: #9ca3af; /* text-gray-400 */
+            font-size: 0.875rem; /* text-sm */
+        }
+        .data-value {
+            color: #f9fafb; /* text-gray-50 */
+            font-size: 2.25rem; /* text-4xl */
+            font-weight: 700; /* font-bold */
+        }
+        .data-unit {
+            color: #6b7280; /* text-gray-500 */
+            font-size: 1rem; /* text-base */
+            margin-left: 0.5rem; /* ml-2 */
+        }
+    </style>
+</head>
+<body class="text-gray-200">
+
+    <div class="container mx-auto p-4 md:p-8 max-w-7xl">
+
+        <!-- Header -->
+        <header class="flex justify-between items-center mb-6">
+            <h1 class="text-3xl font-bold text-white">Bottle Rocket Telemetry</h1>
+            <div class="flex items-center space-x-4">
+                <div id="websocket-status" class="flex items-center space-x-2">
+                    <span class="status-dot status-disconnected"></span>
+                    <span class="text-gray-400">Disconnected</span>
+                </div>
+                <button id="simulate-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">Simulate Data</button>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <!-- Left Column: Key Stats & Status -->
+            <div class="lg:col-span-1 flex flex-col gap-6">
+                <!-- Status Card -->
+                <div class="data-card">
+                    <h2 class="text-xl font-semibold text-white mb-4">System Status</h2>
+                    <div class="space-y-3">
+                        <div id="status-bmp280" class="flex justify-between items-center"><span>BMP280 (Altimeter)</span><span class="status-dot status-disconnected"></span></div>
+                        <div id="status-camera" class="flex justify-between items-center"><span>Camera Module 3</span><span class="status-dot status-disconnected"></span></div>
+                        <div id="status-servo" class="flex justify-between items-center"><span>HXT900 Servo</span><span class="status-dot status-disconnected"></span></div>
+                    </div>
+                </div>
+                <!-- Apogee Card -->
+                <div class="data-card text-center">
+                    <p class="data-label">APOGEE</p>
+                    <p class="data-value" id="apogee-val">0<span class="data-unit">m</span></p>
+                </div>
+                <!-- Pressure Card -->
+                <div class="data-card text-center">
+                    <p class="data-label">PRESSURE</p>
+                    <p class="data-value" id="pressure-val">0<span class="data-unit">hPa</span></p>
+                </div>
+            </div>
+
+            <!-- Center Column: Altitude & Velocity -->
+            <div class="lg:col-span-2 flex flex-col gap-6">
+                 <!-- Altitude Graph -->
+                <div class="data-card h-96">
+                    <canvas id="altitudeChart"></canvas>
+                </div>
+                <!-- Live Data Grid -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="data-card text-center">
+                        <p class="data-label">CURRENT ALTITUDE</p>
+                        <p class="data-value" id="altitude-val">0<span class="data-unit">m</span></p>
+                    </div>
+                    <div class="data-card text-center">
+                        <p class="data-label">VELOCITY</p>
+                        <p class="data-value" id="velocity-val">0<span class="data-unit">m/s</span></p>
+                        <p class="text-gray-400" id="velocity-kmh-val">0 km/h</p>
+                    </div>
+                </div>
+            </div>
+            
+             <!-- Right Column: Camera & Debug -->
+            <div class="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Camera Feed -->
+                <div class="data-card md:col-span-1">
+                    <h2 class="text-xl font-semibold text-white mb-4">Camera Feed</h2>
+                    <div class="bg-black rounded-lg aspect-video flex items-center justify-center">
+                        <!-- The camera stream will be an img tag pointing to the Pi's stream -->
+                        <img id="camera-feed" src="https://placehold.co/640x480/000000/FFF?text=Camera+Offline" alt="Camera Feed" class="rounded-lg w-full h-full object-cover">
+                    </div>
+                </div>
+                <!-- Debug Log -->
+                <div class="data-card md:col-span-1">
+                    <h2 class="text-xl font-semibold text-white mb-4">Debug Log</h2>
+                    <div id="debug-log" class="bg-black rounded-lg p-3 h-64 overflow-y-auto font-mono text-sm text-green-400">
+                        <div>[INFO] Dashboard loaded. Waiting for WebSocket connection...</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // --- DOM Element References ---
+        const altitudeVal = document.getElementById('altitude-val');
+        const apogeeVal = document.getElementById('apogee-val');
+        const velocityVal = document.getElementById('velocity-val');
+        const velocityKmhVal = document.getElementById('velocity-kmh-val');
+        const pressureVal = document.getElementById('pressure-val');
+        const cameraFeed = document.getElementById('camera-feed');
+        const debugLog = document.getElementById('debug-log');
+        const simulateBtn = document.getElementById('simulate-btn');
+        
+        const statusElements = {
+            websocket: document.getElementById('websocket-status'),
+            bmp280: document.getElementById('status-bmp280').querySelector('.status-dot'),
+            camera: document.getElementById('status-camera').querySelector('.status-dot'),
+            servo: document.getElementById('status-servo').querySelector('.status-dot'),
+        };
+
+        // --- Chart.js Setup ---
+        const ctx = document.getElementById('altitudeChart').getContext('2d');
+        const altitudeChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Altitude (m)',
+                    data: [],
+                    borderColor: '#4f46e5', // indigo-600
+                    backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.4,
+                    fill: true,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: { unit: 'second' },
+                        ticks: { color: '#9ca3af' },
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        ticks: { color: '#9ca3af' },
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                    }
+                },
+                plugins: {
+                    legend: { display: false }
+                }
+            }
+        });
+
+        // --- Helper Functions ---
+        function addDebugLog(message, level = 'INFO') {
+            const now = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            const color = level === 'ERROR' ? 'text-red-500' : (level === 'WARN' ? 'text-yellow-500' : 'text-green-400');
+            logEntry.className = color;
+            logEntry.innerHTML = `[${level}] ${now}: ${message}`;
+            debugLog.appendChild(logEntry);
+            debugLog.scrollTop = debugLog.scrollHeight; // Auto-scroll
+        }
+        
+        function updateStatus(element, isConnected) {
+            const dot = element.tagName === 'SPAN' ? element : element.querySelector('.status-dot');
+            const text = element.tagName !== 'SPAN' ? element.querySelector('span:last-child') : null;
+
+            if (isConnected) {
+                dot.classList.remove('status-disconnected');
+                dot.classList.add('status-connected');
+                if (text) text.textContent = 'Connected';
+            } else {
+                dot.classList.remove('status-connected');
+                dot.classList.add('status-disconnected');
+                if (text) text.textContent = 'Disconnected';
+            }
+        }
+
+        function updateUI(data) {
+            // Update key values
+            altitudeVal.innerHTML = `${data.altitude.toFixed(2)}<span class="data-unit">m</span>`;
+            apogeeVal.innerHTML = `${data.apogee.toFixed(2)}<span class="data-unit">m</span>`;
+            velocityVal.innerHTML = `${data.velocity.toFixed(2)}<span class="data-unit">m/s</span>`;
+            velocityKmhVal.textContent = `${(data.velocity * 3.6).toFixed(2)} km/h`;
+            pressureVal.innerHTML = `${data.pressure.toFixed(2)}<span class="data-unit">hPa</span>`;
+
+            // Update status dots
+            updateStatus(statusElements.bmp280, data.status.bmp280);
+            updateStatus(statusElements.camera, data.status.camera);
+            updateStatus(statusElements.servo, data.status.servo);
+            
+            // Update camera feed if URL is provided
+            if (data.camera_url && cameraFeed.src !== data.camera_url) {
+                cameraFeed.src = data.camera_url;
+                addDebugLog('Camera stream URL updated.');
+            }
+
+            // Update chart
+            altitudeChart.data.datasets[0].data.push({ x: data.timestamp, y: data.altitude });
+            // Optional: Limit the number of points on the chart for performance
+            if (altitudeChart.data.datasets[0].data.length > 200) {
+                 altitudeChart.data.datasets[0].data.shift();
+            }
+            altitudeChart.update('none'); // 'none' prevents animation for smoother updates
+        }
+
+        // --- WebSocket Logic ---
+        function connectWebSocket() {
+            // IMPORTANT: Replace with your Raspberry Pi's IP address
+            const PI_IP_ADDRESS = '192.168.1.15'; // Example IP
+            const ws = new WebSocket(`ws://${PI_IP_ADDRESS}:8765`);
+
+            ws.onopen = () => {
+                addDebugLog('WebSocket connection established.');
+                updateStatus(statusElements.websocket, true);
+                // Clear simulation if it's running
+                if(window.simulationInterval) clearInterval(window.simulationInterval);
+                simulateBtn.disabled = true;
+                simulateBtn.style.opacity = 0.5;
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateUI(data);
+                } catch (e) {
+                    addDebugLog(`Failed to parse incoming data: ${e.message}`, 'ERROR');
+                }
+            };
+
+            ws.onclose = () => {
+                addDebugLog('WebSocket connection closed. Retrying in 3 seconds...', 'WARN');
+                updateStatus(statusElements.websocket, false);
+                // Set all device statuses to disconnected
+                Object.values(statusElements).forEach(el => updateStatus(el, false));
+                simulateBtn.disabled = false;
+                simulateBtn.style.opacity = 1;
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (error) => {
+                addDebugLog(`WebSocket error: ${error.message}`, 'ERROR');
+                ws.close();
+            };
+        }
+        
+        // --- Simulation Logic (for testing without the Pi) ---
+        let simTime = new Date();
+        let simAlt = 0;
+        let simVel = 0;
+        let simApogee = 0;
+        let phase = 'ascent';
+
+        function runSimulation() {
+            if (!window.simulationInterval) {
+                addDebugLog('Starting data simulation.', 'WARN');
+                window.simulationInterval = setInterval(() => {
+                    if (phase === 'ascent') {
+                        simVel += 4.9 - (simVel * 0.1); // Simulate thrust and drag
+                        if (simVel > 90) phase = 'coast';
+                    } else if (phase === 'coast') {
+                        simVel -= 9.8 * 0.1; // Simulate gravity
+                        if (simVel <= 0) {
+                            simVel = 0;
+                            phase = 'descent';
+                        }
+                    } else { // descent
+                        simVel -= 2; // Slow descent
+                    }
+                    
+                    simAlt += simVel * 0.1;
+                    if (simAlt < 0) simAlt = 0;
+                    if (simAlt > simApogee) simApogee = simAlt;
+
+                    const mockData = {
+                        timestamp: new Date(simTime.getTime()),
+                        altitude: simAlt,
+                        apogee: simApogee,
+                        velocity: simVel,
+                        pressure: 1013.25 - (simAlt / 8.3),
+                        status: { bmp280: true, camera: true, servo: false },
+                        camera_url: "https://placehold.co/640x480/1f2937/FFF?text=Simulated+Feed"
+                    };
+                    updateUI(mockData);
+                    simTime.setSeconds(simTime.getSeconds() + 0.1);
+
+                }, 100);
+            }
+        }
+        simulateBtn.addEventListener('click', runSimulation);
+
+        // --- Initial Load ---
+        connectWebSocket();
+
+    </script>
+</body>
+</html>
+
