@@ -1,13 +1,12 @@
 #!/usr/bin/env python
 
 # ---------------------------------------------------------------------------
-# Integrated Bottle Rocket Telemetry Server (with Altitude Zeroing)
+# Integrated Bottle Rocket Telemetry Server (with Servo Control)
 # ---------------------------------------------------------------------------
-# This version adds the ability to receive a command from the dashboard
-# to zero the altitude at the current pressure level.
+# This version adds a multi-stage arming and deployment sequence for the servo.
 #
 # To Run:
-# 1. Place index.html in the same directory as this script.
+# 1. Install gpiozero: sudo apt-get install python3-gpiozero
 # 2. Run the `start.sh` script from your terminal.
 # ---------------------------------------------------------------------------
 
@@ -24,7 +23,7 @@ import os
 # --- WebSocket Server Libraries ---
 import websockets
 
-# --- Sensor Libraries ---
+# --- Hardware Control Libraries ---
 try:
     from smbus2 import SMBus
     SMBUS2_ENABLED = True
@@ -32,15 +31,27 @@ except ImportError:
     print("WARNING: smbus2 library not found. Run 'pip install smbus2'.")
     SMBUS2_ENABLED = False
 
-# These flags are now just for the status report. The actual services are run externally.
-CAMERA_ENABLED = True 
-SERVO_ENABLED = True
+try:
+    import gpiozero
+    GPIOZERO_ENABLED = True
+except ImportError:
+    print("WARNING: gpiozero library not found. Run 'sudo apt-get install python3-gpiozero'.")
+    GPIOZERO_ENABLED = False
+
 
 # --- Configuration ---
 HOST = '0.0.0.0'
 WEBSOCKET_PORT = 8765
 HTTP_PORT = 8000
 DATA_RATE_HZ = 100
+SERVO_PIN = 17 # The GPIO pin your servo signal wire is connected to
+CAMERA_ENABLED = True
+SERVO_ENABLED = True
+
+# Servo positions (-1.0 to 1.0)
+SERVO_UNARMED_POS = -0.8  # Approx. 18 degrees
+SERVO_ARMED_POS = 0.0     # Approx. 90 degrees
+SERVO_DEPLOYED_POS = 1.0  # Approx. 180 degrees
 
 # --- Global State Variables ---
 clients = set()
@@ -48,7 +59,8 @@ apogee = 0.0
 last_altitude = 0.0
 last_timestamp = time.monotonic()
 bmp_sensor = None
-ground_level_pressure = None # Will store the pressure when altitude is zeroed
+servo = None
+ground_level_pressure = None
 status = {
     "bmp280": False,
     "camera": True,
@@ -81,40 +93,64 @@ class BMP280:
     @property
     def pressure(self):
         data = self.bus.read_i2c_block_data(self.address, 0xF7, 6); adc_P = (data[0] << 12) | (data[1] << 4) | (data[2] >> 4); adc_T = (data[3] << 12) | (data[4] << 4) | (data[5] >> 4); self._compensate_T(adc_T); return self._compensate_P(adc_P)
-    
-    # The altitude calculation is now separate from the class
     def get_altitude(self, pressure, sea_level_pressure):
         return 44330.0 * (1.0 - math.pow(pressure / sea_level_pressure, 1.0/5.255))
 
+# --- Servo Control ---
+def set_servo_position(position_value, description):
+    """Generic function to move servo and detach."""
+    global servo
+    if not servo:
+        print("WARNING: Servo not initialized, cannot move.")
+        return
+    try:
+        print(f"ACTION: Moving servo to {description} position ({position_value})...")
+        servo.value = position_value
+        time.sleep(1) # Hold for 1 second
+        servo.detach() # Detach to save power and prevent jitter
+        print(f"ACTION: Servo moved to {description} and detached.")
+    except Exception as e:
+        print(f"ERROR: Failed to operate servo: {e}")
+
+def arm_parachute():
+    set_servo_position(SERVO_ARMED_POS, "ARMED")
+
+def deploy_parachute():
+    set_servo_position(SERVO_DEPLOYED_POS, "DEPLOYED")
+
 # --- Sensor Initialization ---
 def initialize_sensors():
-    global bmp_sensor, status, ground_level_pressure
+    global bmp_sensor, status, ground_level_pressure, servo
     if SMBUS2_ENABLED:
         try:
             bmp_sensor = BMP280(i2c_bus=1, address=0x76)
-            # Set initial ground level pressure on startup
             ground_level_pressure = bmp_sensor.pressure
             status["bmp280"] = True
-            print(f"INFO: BMP280 sensor initialized. Initial ground pressure: {ground_level_pressure:.2f} hPa")
+            print(f"INFO: BMP280 initialized. Ground pressure: {ground_level_pressure:.2f} hPa")
         except Exception as e:
             print(f"ERROR: Could not initialize BMP280. {e}")
             status["bmp280"] = False
+            
+    if GPIOZERO_ENABLED:
+        try:
+            servo = gpiozero.Servo(SERVO_PIN)
+            status["servo"] = True
+            print(f"INFO: Servo on GPIO {SERVO_PIN} initialized.")
+            set_servo_position(SERVO_UNARMED_POS, "UNARMED") # Set initial safe position
+        except Exception as e:
+            print(f"ERROR: Could not initialize servo on GPIO {SERVO_PIN}. {e}")
+            status["servo"] = False
     
     if not CAMERA_ENABLED: status["camera"] = False
-    if SERVO_ENABLED: status["servo"] = True
 
 # --- Data Acquisition and Calculation ---
 def get_telemetry_data():
     global apogee, last_altitude, last_timestamp
     current_time = time.monotonic(); time_delta = current_time - last_timestamp
-    
     if status["bmp280"] and bmp_sensor:
         pressure = bmp_sensor.pressure
-        # Calculate altitude based on the current ground_level_pressure
         altitude = bmp_sensor.get_altitude(pressure, ground_level_pressure)
-    else: 
-        altitude, pressure = 0.0, 0.0
-
+    else: altitude, pressure = 0.0, 0.0
     velocity = (altitude - last_altitude) / time_delta if time_delta > 0 else 0.0
     if altitude > apogee: apogee = altitude
     last_altitude, last_timestamp = altitude, current_time
@@ -131,15 +167,18 @@ async def handler(websocket):
         async for message in websocket:
             try:
                 data = json.loads(message)
-                if data.get("command") == "zero_altitude":
+                command = data.get("command")
+                if command == "zero_altitude":
                     if bmp_sensor:
                         ground_level_pressure = bmp_sensor.pressure
-                        apogee = 0.0
-                        last_altitude = 0.0
+                        apogee = 0.0; last_altitude = 0.0
                         print(f"ACTION: Altitude zeroed. New ground pressure: {ground_level_pressure:.2f} hPa")
+                elif command == "arm_parachute":
+                    arm_parachute()
+                elif command == "deploy_parachute":
+                    deploy_parachute()
             except json.JSONDecodeError:
                 print(f"WARNING: Received invalid JSON message: {message}")
-
     finally:
         clients.remove(websocket)
         print(f"INFO: Client disconnected from {websocket.remote_address}")
@@ -165,13 +204,10 @@ def start_http_server():
 # --- Main Execution ---
 async def main():
     initialize_sensors()
-    
     http_thread = threading.Thread(target=start_http_server, daemon=True)
     http_thread.start()
-    
     server = await websockets.serve(handler, HOST, WEBSOCKET_PORT)
     print(f"INFO: WebSocket server started on ws://{HOST}:{WEBSOCKET_PORT}")
-    
     await broadcast_data()
 
 if __name__ == "__main__":

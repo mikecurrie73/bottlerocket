@@ -56,7 +56,7 @@
         <header class="flex justify-between items-center mb-6">
             <h1 class="text-3xl font-bold text-white">Bottle Rocket Telemetry</h1>
             <div class="flex items-center space-x-4">
-                 <!-- Zero Altitude Button -->
+                <button id="parachute-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105" disabled>Arm Parachute</button>
                 <button id="zero-altitude-btn" class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105" disabled>Zero Altitude</button>
                 <div id="websocket-status" class="flex items-center space-x-2">
                     <span class="status-dot status-disconnected"></span>
@@ -134,6 +134,7 @@
     <script>
         // --- Global WebSocket Reference ---
         let ws;
+        let isParachuteArmed = false;
 
         // --- DOM Element References ---
         const altitudeVal = document.getElementById('altitude-val');
@@ -144,6 +145,7 @@
         const cameraFeed = document.getElementById('camera-feed');
         const debugLog = document.getElementById('debug-log');
         const zeroAltitudeBtn = document.getElementById('zero-altitude-btn');
+        const parachuteBtn = document.getElementById('parachute-btn');
         
         const statusElements = {
             websocket: document.getElementById('websocket-status'),
@@ -242,7 +244,8 @@
             ws.onopen = () => {
                 addDebugLog('WebSocket connection established.');
                 updateStatus(statusElements.websocket, true);
-                zeroAltitudeBtn.disabled = false; // Enable the button on connect
+                zeroAltitudeBtn.disabled = false;
+                parachuteBtn.disabled = false;
             };
 
             ws.onmessage = (event) => {
@@ -258,7 +261,8 @@
                 addDebugLog('WebSocket connection closed. Retrying in 3 seconds...', 'WARN');
                 updateStatus(statusElements.websocket, false);
                 Object.values(statusElements).forEach(el => updateStatus(el, false));
-                zeroAltitudeBtn.disabled = true; // Disable button on disconnect
+                zeroAltitudeBtn.disabled = true;
+                parachuteBtn.disabled = true;
                 setTimeout(connectWebSocket, 3000);
             };
 
@@ -274,12 +278,42 @@
                 const command = { command: "zero_altitude" };
                 ws.send(JSON.stringify(command));
                 addDebugLog("Sent 'zero_altitude' command to server.");
-                // Also reset the apogee display and chart on the client side immediately
                 apogeeVal.innerHTML = `0.00<span class="data-unit">m</span>`;
                 altitudeChart.data.datasets[0].data = [];
                 altitudeChart.update();
             } else {
                 addDebugLog("Cannot zero altitude: WebSocket is not connected.", "ERROR");
+            }
+        });
+
+        parachuteBtn.addEventListener('click', () => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addDebugLog("Cannot send command: WebSocket is not connected.", "ERROR");
+                return;
+            }
+
+            if (!isParachuteArmed) {
+                // Arming sequence
+                const command = { command: "arm_parachute" };
+                ws.send(JSON.stringify(command));
+                addDebugLog("Sent 'arm_parachute' command to server.");
+                
+                // Update button UI
+                parachuteBtn.textContent = "Deploy Parachute";
+                parachuteBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+                parachuteBtn.classList.add('bg-red-600', 'hover:bg-red-700');
+                isParachuteArmed = true;
+            } else {
+                // Deployment sequence
+                const command = { command: "deploy_parachute" };
+                ws.send(JSON.stringify(command));
+                addDebugLog("Sent 'deploy_parachute' command to server.");
+                
+                // Update button UI
+                parachuteBtn.textContent = "DEPLOYED";
+                parachuteBtn.disabled = true;
+                parachuteBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+                parachuteBtn.classList.add('bg-gray-500', 'cursor-not-allowed');
             }
         });
 
