@@ -55,12 +55,9 @@
         <!-- Header -->
         <header class="flex justify-between items-center mb-6">
             <h1 class="text-3xl font-bold text-white">Bottle Rocket Telemetry</h1>
-            <div class="flex items-center space-x-4">
-                <div id="websocket-status" class="flex items-center space-x-2">
-                    <span class="status-dot status-disconnected"></span>
-                    <span class="text-gray-400">Disconnected</span>
-                </div>
-                <button id="simulate-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">Simulate Data</button>
+            <div id="websocket-status" class="flex items-center space-x-2">
+                <span class="status-dot status-disconnected"></span>
+                <span class="text-gray-400">Disconnected</span>
             </div>
         </header>
 
@@ -116,8 +113,7 @@
                 <div class="data-card md:col-span-1">
                     <h2 class="text-xl font-semibold text-white mb-4">Camera Feed</h2>
                     <div class="bg-black rounded-lg aspect-video flex items-center justify-center">
-                        <!-- The camera stream will be an img tag pointing to the Pi's stream -->
-                        <img id="camera-feed" src="https://placehold.co/640x480/000000/FFF?text=Camera+Offline" alt="Camera Feed" class="rounded-lg w-full h-full object-cover">
+                       <img id="camera-feed" src="http://192.168.50.27:8080/" alt="Camera Feed" class="rounded-lg w-full h-full object-cover">
                     </div>
                 </div>
                 <!-- Debug Log -->
@@ -140,7 +136,6 @@
         const pressureVal = document.getElementById('pressure-val');
         const cameraFeed = document.getElementById('camera-feed');
         const debugLog = document.getElementById('debug-log');
-        const simulateBtn = document.getElementById('simulate-btn');
         
         const statusElements = {
             websocket: document.getElementById('websocket-status'),
@@ -153,37 +148,18 @@
         const ctx = document.getElementById('altitudeChart').getContext('2d');
         const altitudeChart = new Chart(ctx, {
             type: 'line',
-            data: {
-                datasets: [{
-                    label: 'Altitude (m)',
-                    data: [],
-                    borderColor: '#4f46e5', // indigo-600
-                    backgroundColor: 'rgba(79, 70, 229, 0.1)',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.4,
-                    fill: true,
-                }]
-            },
+            data: { datasets: [{
+                label: 'Altitude (m)', data: [], borderColor: '#4f46e5',
+                backgroundColor: 'rgba(79, 70, 229, 0.1)', borderWidth: 2,
+                pointRadius: 0, tension: 0.4, fill: true,
+            }]},
             options: {
-                responsive: true,
-                maintainAspectRatio: false,
+                responsive: true, maintainAspectRatio: false,
                 scales: {
-                    x: {
-                        type: 'time',
-                        time: { unit: 'second' },
-                        ticks: { color: '#9ca3af' },
-                        grid: { color: 'rgba(255, 255, 255, 0.1)' }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        ticks: { color: '#9ca3af' },
-                        grid: { color: 'rgba(255, 255, 255, 0.1)' }
-                    }
+                    x: { type: 'time', time: { unit: 'second' }, ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255, 255, 255, 0.1)' }},
+                    y: { beginAtZero: true, ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255, 255, 255, 0.1)' }}
                 },
-                plugins: {
-                    legend: { display: false }
-                }
+                plugins: { legend: { display: false } }
             }
         });
 
@@ -195,7 +171,7 @@
             logEntry.className = color;
             logEntry.innerHTML = `[${level}] ${now}: ${message}`;
             debugLog.appendChild(logEntry);
-            debugLog.scrollTop = debugLog.scrollHeight; // Auto-scroll
+            debugLog.scrollTop = debugLog.scrollHeight;
         }
         
         function updateStatus(element, isConnected) {
@@ -214,46 +190,43 @@
         }
 
         function updateUI(data) {
-            // Update key values
             altitudeVal.innerHTML = `${data.altitude.toFixed(2)}<span class="data-unit">m</span>`;
             apogeeVal.innerHTML = `${data.apogee.toFixed(2)}<span class="data-unit">m</span>`;
             velocityVal.innerHTML = `${data.velocity.toFixed(2)}<span class="data-unit">m/s</span>`;
             velocityKmhVal.textContent = `${(data.velocity * 3.6).toFixed(2)} km/h`;
             pressureVal.innerHTML = `${data.pressure.toFixed(2)}<span class="data-unit">hPa</span>`;
 
-            // Update status dots
             updateStatus(statusElements.bmp280, data.status.bmp280);
             updateStatus(statusElements.camera, data.status.camera);
             updateStatus(statusElements.servo, data.status.servo);
             
-            // Update camera feed if URL is provided
             if (data.camera_url && cameraFeed.src !== data.camera_url) {
                 cameraFeed.src = data.camera_url;
                 addDebugLog('Camera stream URL updated.');
             }
 
-            // Update chart
             altitudeChart.data.datasets[0].data.push({ x: data.timestamp, y: data.altitude });
-            // Optional: Limit the number of points on the chart for performance
             if (altitudeChart.data.datasets[0].data.length > 200) {
                  altitudeChart.data.datasets[0].data.shift();
             }
-            altitudeChart.update('none'); // 'none' prevents animation for smoother updates
+            altitudeChart.update('none');
         }
 
         // --- WebSocket Logic ---
         function connectWebSocket() {
-            // IMPORTANT: Replace with your Raspberry Pi's IP address
-            const PI_IP_ADDRESS = '192.168.1.15'; // Example IP
-            const ws = new WebSocket(`ws://${PI_IP_ADDRESS}:8765`);
+            // ** CRITICAL CHANGE HERE **
+            // Dynamically determine the host address from the browser's URL.
+            // This removes the need to hardcode the IP address.
+            const host = window.location.hostname;
+            const ws_port = 8765; // The WebSocket port from your Python script
+            const ws_url = `ws://${host}:${ws_port}`;
+            
+            addDebugLog(`Attempting to connect to WebSocket at: ${ws_url}`);
+            const ws = new WebSocket(ws_url);
 
             ws.onopen = () => {
                 addDebugLog('WebSocket connection established.');
                 updateStatus(statusElements.websocket, true);
-                // Clear simulation if it's running
-                if(window.simulationInterval) clearInterval(window.simulationInterval);
-                simulateBtn.disabled = true;
-                simulateBtn.style.opacity = 0.5;
             };
 
             ws.onmessage = (event) => {
@@ -268,68 +241,37 @@
             ws.onclose = () => {
                 addDebugLog('WebSocket connection closed. Retrying in 3 seconds...', 'WARN');
                 updateStatus(statusElements.websocket, false);
-                // Set all device statuses to disconnected
                 Object.values(statusElements).forEach(el => updateStatus(el, false));
-                simulateBtn.disabled = false;
-                simulateBtn.style.opacity = 1;
                 setTimeout(connectWebSocket, 3000);
             };
 
             ws.onerror = (error) => {
-                addDebugLog(`WebSocket error: ${error.message}`, 'ERROR');
+                addDebugLog(`WebSocket error. Is the server running?`, 'ERROR');
                 ws.close();
             };
         }
         
-        // --- Simulation Logic (for testing without the Pi) ---
-        let simTime = new Date();
-        let simAlt = 0;
-        let simVel = 0;
-        let simApogee = 0;
-        let phase = 'ascent';
-
-        function runSimulation() {
-            if (!window.simulationInterval) {
-                addDebugLog('Starting data simulation.', 'WARN');
-                window.simulationInterval = setInterval(() => {
-                    if (phase === 'ascent') {
-                        simVel += 4.9 - (simVel * 0.1); // Simulate thrust and drag
-                        if (simVel > 90) phase = 'coast';
-                    } else if (phase === 'coast') {
-                        simVel -= 9.8 * 0.1; // Simulate gravity
-                        if (simVel <= 0) {
-                            simVel = 0;
-                            phase = 'descent';
-                        }
-                    } else { // descent
-                        simVel -= 2; // Slow descent
-                    }
-                    
-                    simAlt += simVel * 0.1;
-                    if (simAlt < 0) simAlt = 0;
-                    if (simAlt > simApogee) simApogee = simAlt;
-
-                    const mockData = {
-                        timestamp: new Date(simTime.getTime()),
-                        altitude: simAlt,
-                        apogee: simApogee,
-                        velocity: simVel,
-                        pressure: 1013.25 - (simAlt / 8.3),
-                        status: { bmp280: true, camera: true, servo: false },
-                        camera_url: "https://placehold.co/640x480/1f2937/FFF?text=Simulated+Feed"
-                    };
-                    updateUI(mockData);
-                    simTime.setSeconds(simTime.getSeconds() + 0.1);
-
-                }, 100);
-            }
-        }
-        simulateBtn.addEventListener('click', runSimulation);
-
         // --- Initial Load ---
         connectWebSocket();
 
     </script>
 </body>
 </html>
+```
 
+### **How to Run the New System**
+
+1.  **Place Files Together:** Make sure your new `index.html` file and your `rocket_server.py` file are in the **exact same directory** on your Raspberry Pi (e.g., `~/liamrocket`).
+2.  **Start the Server:** In a terminal on your Pi, navigate to that directory (`cd ~/liamrocket`) and run the server:
+    ```bash
+    python rocket_server.py
+    ```
+    You should see messages that both the HTTP and WebSocket servers have started.
+3.  **Find Your Pi's IP Address:** In a new terminal, run `hostname -I` to get the IP address (e.g., `192.168.1.45`).
+4.  **Connect from Any Device:** Now, go to **any other computer or phone on the same Wi-Fi network**. Open a web browser and type in the address bar:
+    ```
+    http://<YOUR_PI_IP_ADDRESS>:8000
+    ```
+    For example: `http://192.168.1.45:8000`
+
+The dashboard should now load and connect successfully, without you needing to have the `index.html` file on that devi
