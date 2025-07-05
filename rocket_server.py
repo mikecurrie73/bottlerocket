@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 
 # ---------------------------------------------------------------------------
-# Integrated Bottle Rocket Telemetry Server (Decoupled Version)
+# Integrated Bottle Rocket Telemetry Server (with Altitude Zeroing)
 # ---------------------------------------------------------------------------
-# This script is now only responsible for sensor data and the web server.
-# It is started by the `start.sh` script, which also handles the camera.
+# This version adds the ability to receive a command from the dashboard
+# to zero the altitude at the current pressure level.
 #
 # To Run:
 # 1. Place index.html in the same directory as this script.
@@ -41,7 +41,6 @@ HOST = '0.0.0.0'
 WEBSOCKET_PORT = 8765
 HTTP_PORT = 8000
 DATA_RATE_HZ = 100
-SEA_LEVEL_PRESSURE_HPA = 1013.25
 
 # --- Global State Variables ---
 clients = set()
@@ -49,9 +48,10 @@ apogee = 0.0
 last_altitude = 0.0
 last_timestamp = time.monotonic()
 bmp_sensor = None
+ground_level_pressure = None # Will store the pressure when altitude is zeroed
 status = {
     "bmp280": False,
-    "camera": True,  # We assume the start script will handle the camera.
+    "camera": True,
     "servo": False
 }
 
@@ -60,7 +60,6 @@ class BMP280:
     def __init__(self, i2c_bus=1, address=0x76):
         self.bus = SMBus(i2c_bus)
         self.address = address
-        self.sea_level_pressure = SEA_LEVEL_PRESSURE_HPA
         self._load_calibration_data()
         config = (0b101 << 5) | (0b101 << 2) | 0b11
         self.bus.write_byte_data(self.address, 0xF5, 0b10100000)
@@ -82,23 +81,25 @@ class BMP280:
     @property
     def pressure(self):
         data = self.bus.read_i2c_block_data(self.address, 0xF7, 6); adc_P = (data[0] << 12) | (data[1] << 4) | (data[2] >> 4); adc_T = (data[3] << 12) | (data[4] << 4) | (data[5] >> 4); self._compensate_T(adc_T); return self._compensate_P(adc_P)
-    @property
-    def altitude(self):
-        p = self.pressure; return 44330.0 * (1.0 - math.pow(p / self.sea_level_pressure, 1.0/5.255))
+    
+    # The altitude calculation is now separate from the class
+    def get_altitude(self, pressure, sea_level_pressure):
+        return 44330.0 * (1.0 - math.pow(pressure / sea_level_pressure, 1.0/5.255))
 
 # --- Sensor Initialization ---
 def initialize_sensors():
-    global bmp_sensor, status
+    global bmp_sensor, status, ground_level_pressure
     if SMBUS2_ENABLED:
         try:
             bmp_sensor = BMP280(i2c_bus=1, address=0x76)
+            # Set initial ground level pressure on startup
+            ground_level_pressure = bmp_sensor.pressure
             status["bmp280"] = True
-            print("INFO: BMP280 sensor initialized successfully.")
+            print(f"INFO: BMP280 sensor initialized. Initial ground pressure: {ground_level_pressure:.2f} hPa")
         except Exception as e:
-            print(f"ERROR: Could not initialize BMP280. Check connection and I2C address. {e}")
+            print(f"ERROR: Could not initialize BMP280. {e}")
             status["bmp280"] = False
     
-    # The camera status is assumed to be true. The frontend will show "offline" if the stream isn't actually running.
     if not CAMERA_ENABLED: status["camera"] = False
     if SERVO_ENABLED: status["servo"] = True
 
@@ -106,9 +107,14 @@ def initialize_sensors():
 def get_telemetry_data():
     global apogee, last_altitude, last_timestamp
     current_time = time.monotonic(); time_delta = current_time - last_timestamp
+    
     if status["bmp280"] and bmp_sensor:
-        altitude = bmp_sensor.altitude; pressure = bmp_sensor.pressure
-    else: altitude, pressure = 0.0, 0.0
+        pressure = bmp_sensor.pressure
+        # Calculate altitude based on the current ground_level_pressure
+        altitude = bmp_sensor.get_altitude(pressure, ground_level_pressure)
+    else: 
+        altitude, pressure = 0.0, 0.0
+
     velocity = (altitude - last_altitude) / time_delta if time_delta > 0 else 0.0
     if altitude > apogee: apogee = altitude
     last_altitude, last_timestamp = altitude, current_time
@@ -117,9 +123,26 @@ def get_telemetry_data():
 
 # --- WebSocket Server Logic ---
 async def handler(websocket):
-    clients.add(websocket); print(f"INFO: Client connected from {websocket.remote_address}")
-    try: await websocket.wait_closed()
-    finally: clients.remove(websocket); print(f"INFO: Client disconnected from {websocket.remote_address}")
+    global ground_level_pressure, apogee, last_altitude
+    clients.add(websocket)
+    print(f"INFO: Client connected from {websocket.remote_address}")
+    try:
+        # Listen for messages from the client
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                if data.get("command") == "zero_altitude":
+                    if bmp_sensor:
+                        ground_level_pressure = bmp_sensor.pressure
+                        apogee = 0.0
+                        last_altitude = 0.0
+                        print(f"ACTION: Altitude zeroed. New ground pressure: {ground_level_pressure:.2f} hPa")
+            except json.JSONDecodeError:
+                print(f"WARNING: Received invalid JSON message: {message}")
+
+    finally:
+        clients.remove(websocket)
+        print(f"INFO: Client disconnected from {websocket.remote_address}")
 
 async def broadcast_data():
     while True:

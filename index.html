@@ -55,9 +55,13 @@
         <!-- Header -->
         <header class="flex justify-between items-center mb-6">
             <h1 class="text-3xl font-bold text-white">Bottle Rocket Telemetry</h1>
-            <div id="websocket-status" class="flex items-center space-x-2">
-                <span class="status-dot status-disconnected"></span>
-                <span class="text-gray-400">Disconnected</span>
+            <div class="flex items-center space-x-4">
+                 <!-- Zero Altitude Button -->
+                <button id="zero-altitude-btn" class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105" disabled>Zero Altitude</button>
+                <div id="websocket-status" class="flex items-center space-x-2">
+                    <span class="status-dot status-disconnected"></span>
+                    <span class="text-gray-400">Disconnected</span>
+                </div>
             </div>
         </header>
 
@@ -113,7 +117,7 @@
                 <div class="data-card md:col-span-1">
                     <h2 class="text-xl font-semibold text-white mb-4">Camera Feed</h2>
                     <div class="bg-black rounded-lg aspect-video flex items-center justify-center">
-                       <img id="camera-feed" src="http://192.168.50.27:8080/" alt="Camera Feed" class="rounded-lg w-full h-full object-cover">
+                        <img id="camera-feed" src="https://placehold.co/640x480/000000/FFF?text=Camera+Offline" alt="Camera Feed" class="rounded-lg w-full h-full object-cover">
                     </div>
                 </div>
                 <!-- Debug Log -->
@@ -128,6 +132,9 @@
     </div>
 
     <script>
+        // --- Global WebSocket Reference ---
+        let ws;
+
         // --- DOM Element References ---
         const altitudeVal = document.getElementById('altitude-val');
         const apogeeVal = document.getElementById('apogee-val');
@@ -136,6 +143,7 @@
         const pressureVal = document.getElementById('pressure-val');
         const cameraFeed = document.getElementById('camera-feed');
         const debugLog = document.getElementById('debug-log');
+        const zeroAltitudeBtn = document.getElementById('zero-altitude-btn');
         
         const statusElements = {
             websocket: document.getElementById('websocket-status'),
@@ -200,9 +208,19 @@
             updateStatus(statusElements.camera, data.status.camera);
             updateStatus(statusElements.servo, data.status.servo);
             
-            if (data.camera_url && cameraFeed.src !== data.camera_url) {
-                cameraFeed.src = data.camera_url;
-                addDebugLog('Camera stream URL updated.');
+            const camera_host = window.location.hostname;
+            const camera_port = 8080;
+            const stream_url = `http://${camera_host}:${camera_port}/`;
+            const placeholder_url = "https://placehold.co/640x480/000000/FFF?text=Camera+Offline";
+
+            if (data.status.camera) {
+                if (cameraFeed.src !== stream_url) {
+                    cameraFeed.src = stream_url;
+                }
+            } else {
+                if (cameraFeed.src !== placeholder_url) {
+                    cameraFeed.src = placeholder_url;
+                }
             }
 
             altitudeChart.data.datasets[0].data.push({ x: data.timestamp, y: data.altitude });
@@ -214,19 +232,17 @@
 
         // --- WebSocket Logic ---
         function connectWebSocket() {
-            // ** CRITICAL CHANGE HERE **
-            // Dynamically determine the host address from the browser's URL.
-            // This removes the need to hardcode the IP address.
             const host = window.location.hostname;
-            const ws_port = 8765; // The WebSocket port from your Python script
+            const ws_port = 8765;
             const ws_url = `ws://${host}:${ws_port}`;
             
             addDebugLog(`Attempting to connect to WebSocket at: ${ws_url}`);
-            const ws = new WebSocket(ws_url);
+            ws = new WebSocket(ws_url);
 
             ws.onopen = () => {
                 addDebugLog('WebSocket connection established.');
                 updateStatus(statusElements.websocket, true);
+                zeroAltitudeBtn.disabled = false; // Enable the button on connect
             };
 
             ws.onmessage = (event) => {
@@ -242,6 +258,7 @@
                 addDebugLog('WebSocket connection closed. Retrying in 3 seconds...', 'WARN');
                 updateStatus(statusElements.websocket, false);
                 Object.values(statusElements).forEach(el => updateStatus(el, false));
+                zeroAltitudeBtn.disabled = true; // Disable button on disconnect
                 setTimeout(connectWebSocket, 3000);
             };
 
@@ -251,27 +268,25 @@
             };
         }
         
+        // --- Event Listeners ---
+        zeroAltitudeBtn.addEventListener('click', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const command = { command: "zero_altitude" };
+                ws.send(JSON.stringify(command));
+                addDebugLog("Sent 'zero_altitude' command to server.");
+                // Also reset the apogee display and chart on the client side immediately
+                apogeeVal.innerHTML = `0.00<span class="data-unit">m</span>`;
+                altitudeChart.data.datasets[0].data = [];
+                altitudeChart.update();
+            } else {
+                addDebugLog("Cannot zero altitude: WebSocket is not connected.", "ERROR");
+            }
+        });
+
         // --- Initial Load ---
         connectWebSocket();
 
     </script>
 </body>
 </html>
-```
 
-### **How to Run the New System**
-
-1.  **Place Files Together:** Make sure your new `index.html` file and your `rocket_server.py` file are in the **exact same directory** on your Raspberry Pi (e.g., `~/liamrocket`).
-2.  **Start the Server:** In a terminal on your Pi, navigate to that directory (`cd ~/liamrocket`) and run the server:
-    ```bash
-    python rocket_server.py
-    ```
-    You should see messages that both the HTTP and WebSocket servers have started.
-3.  **Find Your Pi's IP Address:** In a new terminal, run `hostname -I` to get the IP address (e.g., `192.168.1.45`).
-4.  **Connect from Any Device:** Now, go to **any other computer or phone on the same Wi-Fi network**. Open a web browser and type in the address bar:
-    ```
-    http://<YOUR_PI_IP_ADDRESS>:8000
-    ```
-    For example: `http://192.168.1.45:8000`
-
-The dashboard should now load and connect successfully, without you needing to have the `index.html` file on that devi
