@@ -4,8 +4,15 @@ import io
 from PIL import Image
 
 app = Flask(__name__)
+
+# Initialize camera
 picam2 = Picamera2()
 picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
+
+# Enable continuous autofocus (AfMode = 2)
+picam2.set_controls({"AfMode": 2})
+
+# Start camera
 picam2.start()
 
 def generate_frames():
@@ -21,7 +28,6 @@ def generate_frames():
         yield (b"--frame\r\n"
                b"Content-Type: image/jpeg\r\n\r\n" +
                jpeg_bytes + b"\r\n")
-
 
 @app.route('/')
 def index():
